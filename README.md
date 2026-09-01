@@ -15,7 +15,7 @@ Duas ferramentas em um só sistema:
 | Camada    | Tecnologia |
 |-----------|------------|
 | Backend   | Node.js 22+ · Express |
-| Banco     | SQLite via `node:sqlite` (módulo nativo — **sem dependência compilada**) |
+| Banco     | SQLite (`node:sqlite`) no desenvolvimento · **PostgreSQL** em produção |
 | Planilhas | SheetJS (`xlsx`) para XLSX/XLS · parser próprio para CSV (`;`, aspas, Latin-1) |
 | PDF       | `pdfjs-dist` — extração de texto com coordenadas para remontar a tabela |
 | Frontend  | HTML + CSS + JavaScript puro (sem build, sem framework) |
@@ -28,6 +28,10 @@ npm start
 ```
 
 Acesse **http://localhost:3000** (mude a porta com `PORT=8080 npm start`).
+
+Sem configurar nada, o sistema usa SQLite em `data/empenho.db`. Se existir a variável
+`DATABASE_URL`, ele usa PostgreSQL — é o que acontece na Vercel. Para conferir qual banco
+está ativo: `GET /api/saude`.
 
 Para gerar uma planilha de teste no formato típico da folha:
 
@@ -50,8 +54,10 @@ npm run exemplo-pdf
 
 ```
 seduc-sistema/
-├── server.js                 # API REST (Express)
-├── db.js                     # conexão SQLite + criação do esquema
+├── server.js                 # API REST (Express) — exporta o app
+├── db.js                     # camada de dados: SQLite (local) ou Postgres (produção)
+├── api/index.js              # ponto de entrada da Vercel (função serverless)
+├── vercel.json               # roteamento /api/* -> função
 ├── lib/
 │   ├── parser.js             # leitura de XLSX/CSV e detecção de colunas
 │   ├── conversor.js          # conversão PDF/CSV/XLS -> XLSX
@@ -63,7 +69,8 @@ seduc-sistema/
 │   └── conversor.js          # aba Conversor
 ├── scripts/
 │   ├── gerar-planilha-exemplo.js
-│   └── gerar-pdf-exemplo.js
+│   ├── gerar-pdf-exemplo.js
+│   └── migrar-para-postgres.js
 └── data/                     # banco SQLite (empenho.db) e planilhas de exemplo
 ```
 
@@ -153,6 +160,7 @@ saldo     = fontes.teto_centavos - empenhado
 | `POST` | `/api/empenhos` | empenha/estorna: `{"ids":[1,2],"empenhado":true,"forcar":false}` |
 | `GET` | `/api/resumo` | totais consolidados |
 | `GET` | `/api/fontes/:id/export.csv` | exporta a fonte com o status de cada item |
+| `GET` | `/api/saude` | diagnóstico: qual banco está ativo e quantas fontes existem |
 | `POST` | `/api/converter` | converte um arquivo para `.xlsx` e devolve resumo + prévia |
 | `GET` | `/api/converter/:id/download` | baixa o `.xlsx` gerado |
 | `POST` | `/api/converter/:id/importar` | manda o convertido direto para o empenho |
@@ -448,10 +456,78 @@ Desmarcar o *checkbox* estorna o item e devolve o valor ao saldo.
 
 ---
 
+## Deploy na Vercel
+
+### Por que o SQLite não serve lá
+
+A Vercel executa o backend como **função serverless**: cada requisição pode cair em uma
+máquina diferente, e o disco é apagado ao fim da execução. Um arquivo `empenho.db` seria
+perdido — e, pior, silenciosamente: a tela abriria vazia depois de cada importação.
+
+Por isso o sistema tem dois drivers de banco (`db.js`), com a mesma interface:
+
+| Ambiente | Banco | Como é escolhido |
+|---|---|---|
+| Local | SQLite em `data/empenho.db` | padrão, sem configuração |
+| Vercel | PostgreSQL | quando existe `DATABASE_URL` (ou `POSTGRES_URL`) |
+
+Duas outras coisas mudaram para o modo serverless funcionar:
+
+- **Arquivos convertidos** (aba Conversor) ficavam em memória, esperando o download. Em
+  serverless o download cairia em outra instância e daria 404. Passaram para a tabela
+  `conversoes`, e somem sozinhos depois de 30 minutos.
+- **Limite de upload**: a Vercel corta o corpo da requisição em ~4,5 MB. O sistema detecta
+  que está lá e recusa antes, com mensagem clara, em vez de deixar o navegador dar erro de
+  rede. Localmente o limite continua 25 MB.
+
+### Passo a passo
+
+**1. Crie o banco.** No painel da Vercel: *Storage → Create Database → Postgres* (Neon).
+Ao conectar o banco ao projeto, a variável `DATABASE_URL` é injetada automaticamente. Se
+usar outro provedor (Neon direto, Supabase, Railway), copie a connection string e cadastre
+em *Settings → Environment Variables* com o nome `DATABASE_URL`.
+
+**2. Suba o código.**
+
+```bash
+git add . && git commit -m "Sistema de empenho SEDUC"
+git push
+```
+
+Importe o repositório na Vercel (*Add New → Project*). Não há passo de build: o
+`vercel.json` já manda `/api/*` para a função e a Vercel serve `public/` pelo CDN.
+
+**3. Confira.** Abra `https://SEU-PROJETO.vercel.app/api/saude`. A resposta deve dizer
+`"banco":"postgres"`. As tabelas são criadas sozinhas na primeira requisição.
+
+**4. Importe a planilha** pela tela, normalmente.
+
+### Levar os dados locais junto
+
+Só vale a pena se já houver empenhos marcados no banco local — senão é mais rápido
+importar a planilha de novo. Com o banco de produção ainda vazio:
+
+```bash
+DATABASE_URL="postgres://..." npm run migrar
+```
+
+O script copia fontes, arquivos, linhas e movimentos preservando os ids, e realinha as
+sequências. Ele se recusa a rodar se o destino já tiver fontes, para não duplicar dados.
+
+### Alternativa: manter o SQLite
+
+Se a Vercel não for uma exigência, plataformas com disco persistente (Render, Railway,
+Fly.io) rodam este sistema **sem alteração nenhuma**: basta apontar para um volume e usar
+`SEDUC_DB` para o caminho do arquivo. Para uma ferramenta interna com uma operadora, é a
+opção mais simples de manter — um backup é copiar um arquivo.
+
+---
+
 ## Notas de implantação
 
-- O banco fica em `data/empenho.db` (SQLite, modo WAL). Backup = copiar esse arquivo.
-  Para começar do zero, pare o servidor e apague `data/empenho.db*`.
+- Localmente o banco fica em `data/empenho.db` (SQLite, modo WAL). Backup = copiar esse
+  arquivo. Para começar do zero, pare o servidor e apague `data/empenho.db*`. Em produção
+  o banco é PostgreSQL — veja a seção de deploy.
 - Não há autenticação: o sistema pressupõe uso em rede interna. O campo
   `empenhado_por` já existe para receber o usuário quando houver login (hoje grava
   `operador`).
