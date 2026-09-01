@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SEDUC · Controle de Empenho da Folha</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📊</text></svg>" />
+</head>
+<body>
+  <header class="topo">
+    <div class="topo-marca">
+      <span class="topo-sigla">SEDUC</span>
+      <div>
+        <h1>Controle de Empenho da Folha</h1>
+        <p>Importação de planilha, teto por fonte e saldo em tempo real</p>
+      </div>
+    </div>
+    <nav class="nav-principal" id="nav-principal">
+      <button data-view="empenho" class="ativo">Empenho</button>
+      <button data-view="conversor">Conversor para Excel</button>
+    </nav>
+    <button id="btn-abrir-upload" class="btn btn-primario">Importar planilha</button>
+  </header>
+
+  <main class="conteudo" id="view-empenho">
+    <!-- ---------------- Resumo geral ---------------- -->
+    <section class="resumo" id="resumo">
+      <article class="cartao">
+        <span class="cartao-rotulo">Teto total definido</span>
+        <strong class="cartao-valor" id="resumo-teto">R$ 0,00</strong>
+      </article>
+      <article class="cartao">
+        <span class="cartao-rotulo">Empenhado</span>
+        <strong class="cartao-valor cor-empenhado" id="resumo-empenhado">R$ 0,00</strong>
+        <span class="cartao-nota" id="resumo-itens">0 de 0 itens</span>
+      </article>
+      <article class="cartao">
+        <span class="cartao-rotulo">Saldo restante</span>
+        <strong class="cartao-valor cor-saldo" id="resumo-saldo">R$ 0,00</strong>
+      </article>
+      <article class="cartao">
+        <span class="cartao-rotulo">A empenhar (importado)</span>
+        <strong class="cartao-valor" id="resumo-pendente">R$ 0,00</strong>
+      </article>
+    </section>
+
+    <!-- ---------------- Abas de fontes ---------------- -->
+    <nav class="abas" id="abas" role="tablist" aria-label="Fontes de recurso"></nav>
+
+    <section id="painel" class="painel" hidden>
+      <div class="painel-cabecalho">
+        <div>
+          <h2 id="fonte-nome">—</h2>
+          <p class="painel-sub" id="fonte-sub">—</p>
+        </div>
+        <div class="painel-acoes">
+          <label class="campo-teto">
+            <span>Teto orçamentário</span>
+            <input type="text" id="input-teto" inputmode="decimal" placeholder="0,00" autocomplete="off" />
+          </label>
+          <button class="btn" id="btn-salvar-teto">Salvar teto</button>
+          <a class="btn btn-secundario" id="btn-exportar" href="#">Exportar CSV</a>
+        </div>
+      </div>
+
+      <div class="medidor">
+        <div class="medidor-barra"><span id="medidor-preenchido"></span></div>
+        <div class="medidor-legenda">
+          <span><b id="medidor-empenhado">R$ 0,00</b> empenhado</span>
+          <span><b id="medidor-saldo">R$ 0,00</b> de saldo</span>
+        </div>
+      </div>
+
+      <div class="metricas">
+        <div><span>Total importado</span><b id="m-total">R$ 0,00</b></div>
+        <div><span>Empenhado</span><b id="m-empenhado" class="cor-empenhado">R$ 0,00</b></div>
+        <div><span>Pendente</span><b id="m-pendente">R$ 0,00</b></div>
+        <div><span>Saldo do teto</span><b id="m-saldo" class="cor-saldo">R$ 0,00</b></div>
+      </div>
+
+      <div class="filtros">
+        <input type="search" id="busca" placeholder="Buscar por nome, matrícula, lotação ou valor…" />
+        <div class="segmentado" id="filtro-status">
+          <button data-status="todos" class="ativo">Todos</button>
+          <button data-status="pendentes">Pendentes</button>
+          <button data-status="empenhados">Empenhados</button>
+        </div>
+        <div class="filtros-espaco"></div>
+        <span class="selecao-info" id="selecao-info" hidden></span>
+        <button class="btn btn-primario" id="btn-empenhar-lote" hidden>Empenhar selecionados</button>
+        <button class="btn btn-secundario" id="btn-estornar-lote" hidden>Estornar selecionados</button>
+      </div>
+
+      <div class="tabela-caixa">
+        <table class="tabela">
+          <thead id="cabecalho-tabela"></thead>
+          <tbody id="corpo-tabela"></tbody>
+        </table>
+        <p class="vazio" id="tabela-vazia" hidden>Nenhum item encontrado com os filtros atuais.</p>
+      </div>
+    </section>
+
+    <section class="estado-vazio" id="estado-vazio">
+      <h2>Nenhuma planilha importada ainda</h2>
+      <p>Importe o arquivo XLSX ou CSV da folha para começar. O sistema identifica a coluna
+         <b>Fonte</b> automaticamente e separa os itens por fonte de recurso.</p>
+      <button class="btn btn-primario" id="btn-vazio-upload">Importar planilha</button>
+    </section>
+
+    <!-- ---------------- Arquivos importados ---------------- -->
+    <section class="arquivos" id="secao-arquivos" hidden>
+      <h3>Planilhas importadas</h3>
+      <ul id="lista-arquivos"></ul>
+    </section>
+
+    <!-- ---------------- Manutenção ---------------- -->
+    <section class="manutencao" id="manutencao" hidden>
+      <span id="manutencao-texto"></span>
+      <button class="link-perigo" id="btn-limpar-fontes">Remover fontes vazias</button>
+    </section>
+  </main>
+
+  <!-- ================= CONVERSOR PARA EXCEL ================= -->
+  <main class="conteudo" id="view-conversor" hidden>
+    <section class="painel painel-solto">
+      <div class="painel-cabecalho">
+        <div>
+          <h2>Converter arquivo para Excel</h2>
+          <p class="painel-sub">
+            Transforma <b>PDF</b>, <b>CSV</b>, <b>TXT</b>, <b>XLS</b> e <b>ODS</b> em uma
+            planilha <b>.xlsx</b>. No PDF, a tabela é reconstruída pela posição do texto
+            na página — não é necessário selecionar nada manualmente.
+          </p>
+        </div>
+      </div>
+
+      <label class="area-drop area-drop-larga" id="conv-drop">
+        <input type="file" id="conv-arquivo" accept=".pdf,.csv,.txt,.xls,.xlsx,.xlsm,.xlsb,.ods" hidden />
+        <strong>Clique para escolher o arquivo</strong>
+        <span>ou arraste aqui — PDF, CSV, TXT, XLS, XLSX, ODS (até 25 MB)</span>
+        <em id="conv-nome"></em>
+      </label>
+
+      <div class="conv-opcoes">
+        <fieldset>
+          <legend>PDF com várias páginas</legend>
+          <label><input type="radio" name="conv-abas" value="unica" checked /> Juntar tudo em uma aba</label>
+          <label><input type="radio" name="conv-abas" value="pagina" /> Uma aba por página</label>
+        </fieldset>
+        <label class="conv-check">
+          <input type="checkbox" id="conv-remover-cabecalho" checked />
+          Remover cabeçalhos repetidos das páginas seguintes
+        </label>
+        <div class="filtros-espaco"></div>
+        <button class="btn btn-primario" id="conv-converter" disabled>Converter para Excel</button>
+      </div>
+
+      <p class="conv-nota">
+        PDFs digitalizados (foto ou scanner) não têm texto selecionável e não podem ser
+        convertidos aqui — seria necessário OCR.
+      </p>
+
+      <div class="retorno" id="conv-retorno" hidden></div>
+
+      <div id="conv-resultado" hidden>
+        <div class="conv-resumo">
+          <div><span>Arquivo gerado</span><b id="conv-r-nome">—</b></div>
+          <div><span>Origem</span><b id="conv-r-origem">—</b></div>
+          <div><span>Abas</span><b id="conv-r-abas">—</b></div>
+          <div><span>Linhas</span><b id="conv-r-linhas">—</b></div>
+        </div>
+
+        <div class="conv-acoes">
+          <a class="btn btn-primario" id="conv-baixar" href="#" download>Baixar .xlsx</a>
+          <button class="btn btn-secundario" id="conv-importar">Importar para o empenho</button>
+        </div>
+
+        <h3 class="conv-titulo-previa">Prévia do resultado</h3>
+        <div class="abas abas-previa" id="conv-abas-previa"></div>
+        <div class="tabela-caixa">
+          <table class="tabela tabela-previa"><tbody id="conv-previa"></tbody></table>
+        </div>
+        <p class="conv-nota" id="conv-previa-nota"></p>
+      </div>
+    </section>
+
+    <section class="arquivos" id="conv-historico-secao" hidden>
+      <h3>Convertidos nesta sessão</h3>
+      <ul id="conv-historico"></ul>
+    </section>
+  </main>
+
+  <!-- ---------------- Modal de upload ---------------- -->
+  <dialog id="modal-upload" class="modal">
+    <form method="dialog" class="modal-fechar"><button aria-label="Fechar">×</button></form>
+    <h2>Importar planilha da folha</h2>
+    <p class="modal-sub">Formatos aceitos: .xlsx, .xls ou .csv (até 25 MB).
+       Obrigatório conter colunas de <b>Fonte</b> e <b>Valor</b>.</p>
+
+    <label class="area-drop" id="area-drop">
+      <input type="file" id="input-arquivo" accept=".xlsx,.xls,.xlsm,.csv,.txt" hidden />
+      <strong>Clique para escolher</strong>
+      <span>ou arraste o arquivo aqui</span>
+      <em id="nome-arquivo"></em>
+    </label>
+
+    <div class="modal-acoes">
+      <button class="btn btn-secundario" id="btn-cancelar-upload" type="button">Cancelar</button>
+      <button class="btn btn-primario" id="btn-enviar" type="button" disabled>Enviar e processar</button>
+    </div>
+
+    <div class="retorno" id="retorno-upload" hidden></div>
+  </dialog>
+
+  <!-- ---------------- Modal de mapeamento manual ---------------- -->
+  <dialog id="modal-mapa" class="modal modal-largo">
+    <form method="dialog" class="modal-fechar"><button aria-label="Fechar">×</button></form>
+    <h2>Apontar as colunas manualmente</h2>
+    <p class="modal-sub">
+      O sistema não reconheceu os títulos das colunas deste arquivo. Abaixo está o que
+      ele leu — indique a linha do cabeçalho e onde estão a <b>Fonte</b> e o <b>Valor</b>.
+    </p>
+
+    <p class="mapa-passo"><b>1.</b> Clique na linha que contém os títulos das colunas</p>
+    <div class="tabela-caixa tabela-mapa">
+      <table class="tabela tabela-previa"><tbody id="mapa-amostra"></tbody></table>
+    </div>
+
+    <p class="mapa-passo"><b>2.</b> Indique cada coluna (só Fonte e Valor são obrigatórios)</p>
+    <div class="mapa-campos" id="mapa-campos"></div>
+
+    <div class="retorno" id="mapa-retorno" hidden></div>
+
+    <div class="modal-acoes">
+      <button class="btn btn-secundario" id="mapa-cancelar" type="button">Cancelar</button>
+      <button class="btn btn-primario" id="mapa-confirmar" type="button">Importar com este mapeamento</button>
+    </div>
+  </dialog>
+
+  <div id="avisos" class="avisos" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+  <script src="mapeamento.js"></script>
+  <script src="conversor.js"></script>
+</body>
+</html>

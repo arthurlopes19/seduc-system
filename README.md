@@ -1,0 +1,459 @@
+# Sistema de Empenho — SEDUC
+
+Duas ferramentas em um só sistema:
+
+1. **Empenho** — importa a planilha da folha, separa os itens por **Fonte** de recurso,
+   permite definir um **teto orçamentário** por fonte e dá baixa item a item por
+   *checkbox*, abatendo o valor do teto em tempo real.
+2. **Conversor para Excel** — transforma PDF, CSV, TXT, XLS e ODS em `.xlsx`, com opção
+   de mandar o resultado direto para o controle de empenho.
+
+---
+
+## Stack
+
+| Camada    | Tecnologia |
+|-----------|------------|
+| Backend   | Node.js 22+ · Express |
+| Banco     | SQLite via `node:sqlite` (módulo nativo — **sem dependência compilada**) |
+| Planilhas | SheetJS (`xlsx`) para XLSX/XLS · parser próprio para CSV (`;`, aspas, Latin-1) |
+| PDF       | `pdfjs-dist` — extração de texto com coordenadas para remontar a tabela |
+| Frontend  | HTML + CSS + JavaScript puro (sem build, sem framework) |
+
+## Como rodar
+
+```bash
+npm install
+npm start
+```
+
+Acesse **http://localhost:3000** (mude a porta com `PORT=8080 npm start`).
+
+Para gerar uma planilha de teste no formato típico da folha:
+
+```bash
+npm run exemplo
+```
+
+O arquivo sai em `data/exemplo-folha.xlsx` (120 linhas, 5 fontes, com linha de título
+e linha de "TOTAL GERAL" — que o sistema ignora automaticamente).
+
+Para testar o conversor, um relatório em PDF de 3 páginas:
+
+```bash
+npm run exemplo-pdf
+```
+
+---
+
+## Estrutura
+
+```
+seduc-sistema/
+├── server.js                 # API REST (Express)
+├── db.js                     # conexão SQLite + criação do esquema
+├── lib/
+│   ├── parser.js             # leitura de XLSX/CSV e detecção de colunas
+│   ├── conversor.js          # conversão PDF/CSV/XLS -> XLSX
+│   └── util.js               # normalização de texto e conversão de valores
+├── public/                   # interface (servida como estático)
+│   ├── index.html
+│   ├── styles.css
+│   ├── app.js                # aba Empenho
+│   └── conversor.js          # aba Conversor
+├── scripts/
+│   ├── gerar-planilha-exemplo.js
+│   └── gerar-pdf-exemplo.js
+└── data/                     # banco SQLite (empenho.db) e planilhas de exemplo
+```
+
+---
+
+## Esquema do banco
+
+Todos os valores monetários são gravados em **centavos (INTEGER)** — soma de dinheiro
+em ponto flutuante acumula erro de arredondamento, o que é inaceitável em empenho.
+
+### `fontes` — catálogo de fontes e teto orçamentário
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `nome` | TEXT | como veio na planilha (ex.: `Salário Educação`) |
+| `nome_normalizado` | TEXT UNIQUE | sem acento/caixa — evita duplicar "FUNDEB 60%" e "Fundeb 60%" |
+| `codigo` | TEXT UNIQUE | código da fonte na planilha padrão (`1540107043`) — é a identidade |
+| `titulo` | TEXT | título lido da primeira linha da aba (`IMPOSTOS – 70% - PESSOAL`) |
+| `meta_centavos` | INTEGER | `Valor-meta da fonte`, como veio da planilha |
+| `teto_centavos` | INTEGER | limite em uso (nasce igual à meta; editável na tela) |
+| `criado_em` / `atualizado_em` | TEXT | |
+
+As fontes são criadas automaticamente na importação; o teto é definido na tela.
+
+### `arquivos` — cada planilha importada (lote)
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `nome_original` | TEXT | nome do arquivo enviado |
+| `competencia` | TEXT | mês de referência detectado |
+| `total_linhas` | INTEGER | linhas importadas |
+| `valor_total_centavos` | INTEGER | soma do lote |
+| `enviado_em` | TEXT | |
+
+Excluir um arquivo remove suas linhas (as fontes e os tetos permanecem).
+
+### `linhas` — cada linha da planilha
+
+| Coluna | Tipo | Observação |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `arquivo_id` | FK → `arquivos` | lote de origem |
+| `fonte_id` | FK → `fontes` | **separação por fonte** |
+| `linha_planilha` | INTEGER | número da linha no arquivo original (rastreabilidade) |
+| `grupo` | TEXT | grupo/nível, propagado do cabeçalho de seção da planilha |
+| `codigo` | TEXT | código da despesa (`319011`) |
+| `descricao` | TEXT | **Ação/Despesa** no formato padrão; descrição da verba no formato plano |
+| `acao` | TEXT | código da ação (`283508`) |
+| `plano_interno` | TEXT | plano interno (`4110028339P`) |
+| `matricula`, `nome`, `cargo`, `lotacao`, `competencia` | TEXT | campos do formato plano |
+| `valor_centavos` | INTEGER | valor do item |
+| `empenhado` | INTEGER | 0 = pendente · 1 = empenhado (o *checkbox*) |
+| `empenhado_em`, `empenhado_por` | TEXT | quando e por quem |
+| `dados_extra` | TEXT (JSON) | colunas da planilha que não foram mapeadas — nada se perde |
+
+Índices: `fonte_id`, `arquivo_id` e `(fonte_id, empenhado)` — este último atende
+direto às somas de "empenhado por fonte".
+
+### `movimentos` — auditoria
+
+Cada marcação e desmarcação grava `EMPENHO` ou `ESTORNO` com valor, usuário e data.
+É o histórico que a planilha manual não tinha.
+
+### Como o saldo é calculado
+
+Não existe coluna "saldo" gravada — ela é sempre derivada, o que impede divergência:
+
+```sql
+empenhado = SUM(valor_centavos) WHERE empenhado = 1
+saldo     = fontes.teto_centavos - empenhado
+```
+
+---
+
+## API
+
+| Método | Rota | Descrição |
+|---|---|---|
+| `POST` | `/api/arquivos` | upload multipart (`arquivo`) — detecta o formato, processa e grava |
+| `GET` | `/api/arquivos` | lotes importados |
+| `DELETE` | `/api/arquivos/:id` | remove o lote e suas linhas |
+| `GET` | `/api/fontes` | fontes com teto, total, empenhado e saldo |
+| `PUT` | `/api/fontes/:id/teto` | define o teto (`{"teto":"20.000,00"}` ou `{"tetoCentavos":2000000}`) |
+| `GET` | `/api/fontes/:id/linhas` | itens **só daquela fonte** + `formato` + `colunas` — filtros `status=pendentes\|empenhados`, `busca` (texto **ou valor**), `arquivoId` |
+| `POST` | `/api/empenhos` | empenha/estorna: `{"ids":[1,2],"empenhado":true,"forcar":false}` |
+| `GET` | `/api/resumo` | totais consolidados |
+| `GET` | `/api/fontes/:id/export.csv` | exporta a fonte com o status de cada item |
+| `POST` | `/api/converter` | converte um arquivo para `.xlsx` e devolve resumo + prévia |
+| `GET` | `/api/converter/:id/download` | baixa o `.xlsx` gerado |
+| `POST` | `/api/converter/:id/importar` | manda o convertido direto para o empenho |
+
+Tanto `/api/arquivos` quanto `/api/converter/:id/importar` aceitam um **mapeamento
+manual** opcional, usado quando o reconhecimento automático não acerta:
+
+```json
+{ "indiceLinha": 3, "mapa": { "fonte": 3, "valor": 5, "nome": 1, "matricula": 0 } }
+```
+
+`indiceLinha` é a linha do cabeçalho (base 0) e cada valor do `mapa` é o índice da
+coluna. Quando a detecção falha, a resposta `422` traz `codigo:
+"COLUNAS_NAO_IDENTIFICADAS"` e uma `amostra` com as 30 primeiras linhas lidas — é ela
+que alimenta a tela de mapeamento.
+
+### Busca
+
+Um único campo procura em tudo: texto e valor.
+
+**Texto** — nome, matrícula, cargo, lotação, competência, grupo, código, ação e plano
+interno. A comparação usa a coluna `linhas.busca_texto`, que guarda esses campos
+concatenados **sem acento e em caixa alta**. Isso existe porque o `UPPER()` do SQLite só
+entende ASCII: sem essa coluna, procurar por `Auxílio` nunca acharia `AUXÍLIO`. A coluna
+é preenchida na importação, e o servidor completa na subida as linhas gravadas antes dela
+existir.
+
+**Valor** — `1.500,00`, `1500,00` e `1500` acham R$ 1.500,00. São duas comparações:
+igualdade exata em centavos e "contém" sobre o valor formatado, então `500` também traz
+R$ 1.500,00 e R$ 4.500,00. As condições de valor só entram quando o termo tem algum
+dígito — sem esse cuidado, uma busca por texto puro casaria com `valor_centavos = 0` e
+traria todos os itens sem valor alocado.
+
+
+### Controle de teto
+
+A validação é feita **no servidor** (o navegador não é fonte de verdade). Se a marcação
+ultrapassar o teto da fonte, a resposta é `409` com o detalhamento:
+
+```json
+{
+  "erro": "TETO_EXCEDIDO",
+  "mensagem": "Esta ação ultrapassa o teto da fonte \"Salário Educação\".",
+  "necessarioCentavos": 9287945,
+  "saldoCentavos": 1815567,
+  "excedenteCentavos": 7472378
+}
+```
+
+A interface mostra esses números e pergunta se deve empenhar mesmo assim; em caso
+afirmativo reenvia com `forcar: true`, e a fonte passa a exibir saldo negativo em
+vermelho (na aba, no medidor e no resumo). Ou seja: o teto **avisa e registra**, não
+trava a operação — a decisão continua sendo da operadora.
+
+---
+
+## Planilha padrão — uma aba por Fonte
+
+É o formato principal do sistema. A detecção é automática: se alguma aba começa com
+`FONTE …` na primeira linha e traz o cabeçalho de colunas logo abaixo, o arquivo entra
+por este caminho (`lib/parser-padrao.js`); caso contrário cai no leitor de planilha
+plana. Não há nada para o usuário escolher.
+
+### Estrutura lida de cada aba
+
+```
+linha 0   FONTE 1540107043 – IMPOSTOS – 70% - PESSOAL          <- título da aba na UI
+linha 1   160102 – FUNDEB – SEDUC – FOLHA:08/2026 – Nº1 | …    <- contexto (competência)
+linha 2   (em branco)
+linha 3   GRUPO/NÍVEL | CÓDIGO | AÇÃO/DESPESA | AÇÃO | VALOR | PLANO INTERNO | FONTE
+linha 4   ADMINISTRATIVO / ADMINISTRATIVO / ADMINISTRATIVO      <- linha de grupo
+linha 5           | 319004 | Contratação… | 283508 | 972701.85 | 4110028339P | 1540107043
+…
+          TOTAL ALOCADO NESTA FONTE  ||||  146472259.69
+          RESUMO DA FONTE
+          Fonte                      | 1540107043
+          Valor-meta da fonte        | 146472259.69     <- vira o TETO da fonte
+          Total dos valores alocados | 146472259.69
+          Diferença (Meta - Alocado) | 0
+          Status                     | META ATINGIDA
+```
+
+Quatro decisões de leitura que importam:
+
+1. **Título da aba** — sai da primeira linha. `FONTE 1540107043 – IMPOSTOS – 70% - PESSOAL`
+   vira `codigo: "1540107043"` + `titulo: "IMPOSTOS – 70% - PESSOAL"`. A aba da interface
+   mostra o título; o código aparece como etiqueta ao lado e é o que identifica a fonte
+   no banco — título pode mudar de competência para competência sem virar outra fonte.
+2. **Grupo vira coluna** — na planilha o grupo é um cabeçalho de seção (linha com só a
+   primeira célula preenchida). Como a regra pede o Grupo *como coluna da tabela*, ele é
+   propagado para todos os itens abaixo dele até aparecer o próximo grupo.
+3. **Rodapé não é dado** — `TOTAL ALOCADO NESTA FONTE` e o bloco `RESUMO DA FONTE` são
+   lidos como metadados, não como itens.
+4. **O teto vem pronto** — `Valor-meta da fonte` é gravado como `meta_centavos` **e** como
+   `teto_centavos`. Não é preciso digitar teto nenhum: ao importar, cada aba já chega com
+   seu limite orçamentário. O campo continua editável na tela.
+
+Como conferência, a soma dos itens é comparada com o `TOTAL ALOCADO NESTA FONTE` da
+própria planilha; divergência vira aviso na resposta da importação. Itens sem valor
+alocado (célula VALOR vazia) são importados com R$ 0,00 e contados à parte.
+
+### JSON enviado ao frontend
+
+`GET /api/fontes` — monta as abas:
+
+```json
+[
+  {
+    "id": 1,
+    "codigo": "1540107043",
+    "titulo": "IMPOSTOS – 70% - PESSOAL",
+    "nome": "IMPOSTOS – 70% - PESSOAL",
+    "metaCentavos": 14647225969,
+    "tetoCentavos": 14647225969,
+    "totalItens": 146,
+    "totalCentavos": 14647225969,
+    "itensEmpenhados": 0,
+    "empenhadoCentavos": 0,
+    "pendenteCentavos": 14647225969,
+    "saldoCentavos": 14647225969,
+    "estourouTeto": false
+  }
+]
+```
+
+`GET /api/fontes/:id/linhas` — monta a tabela daquela fonte, e só dela:
+
+```json
+{
+  "fonte": { "id": 1, "codigo": "1540107043", "titulo": "IMPOSTOS – 70% - PESSOAL", "…": "…" },
+  "formato": "orcamento",
+  "colunas": [
+    { "chave": "grupo",       "rotulo": "Grupo" },
+    { "chave": "codigo",      "rotulo": "Código" },
+    { "chave": "acaoDespesa", "rotulo": "Ação/Despesa" },
+    { "chave": "acao",        "rotulo": "Ação" },
+    { "chave": "valor",       "rotulo": "Valor", "tipo": "moeda" },
+    { "chave": "planoInterno","rotulo": "Plano Interno" },
+    { "chave": "fonte",       "rotulo": "Fonte" }
+  ],
+  "linhas": [
+    {
+      "id": 1,
+      "linhaPlanilha": 6,
+      "grupo": "ADMINISTRATIVO / ADMINISTRATIVO / ADMINISTRATIVO",
+      "codigo": "319004",
+      "acaoDespesa": "Contratação Por Tempo Determinado",
+      "acao": "283508",
+      "valorCentavos": 97270185,
+      "planoInterno": "4110028339P",
+      "fonte": "1540107043",
+      "empenhado": false,
+      "empenhadoEm": null
+    }
+  ]
+}
+```
+
+O array `colunas` é o contrato de exibição: o frontend monta cabeçalho e células
+percorrendo essa ordem, sem nomes de coluna escritos no código da tela. É por isso que a
+**Fonte é sempre a última coluna** — ela é a última do array, definido no servidor
+(`lib/parser-padrao.js` → `COLUNAS`). Valores monetários trafegam em centavos (inteiro)
+e são formatados só na hora de exibir.
+
+Quando a fonte veio de uma planilha plana (formato antigo), `formato` vem como `"folha"`,
+`colunas` vem `null` e a tela usa o conjunto Servidor/Matrícula/Lotação/Descrição/Valor.
+
+---
+
+## Leitura da planilha (formato plano)
+
+O importador foi feito para a realidade dos arquivos da folha:
+
+- **Cabeçalho em qualquer linha** — procura nas 25 primeiras a linha que tenha
+  "Fonte" e "Valor"; linhas de título e brasão acima são ignoradas.
+- **Sinônimos de coluna** — `Fonte`, `Fonte de Recurso`, `Cód. Fonte`…;
+  `Valor`, `Valor Líquido`, `Vlr Total`…; `Nome`, `Nome do Servidor`, `Servidor`…
+  (preposições são descartadas na comparação). A lista fica em `lib/parser.js` → `ALIASES`.
+- **Valores em qualquer formato** — `1.234,56`, `R$ 1.234,56`, `1234.56`, `(500,00)` (negativo).
+- **CSV brasileiro** — detecta o separador (`;`, `,`, tab, `|`) e decodifica
+  Windows-1252 quando o arquivo não é UTF-8.
+- **Linhas de `TOTAL` / `SUBTOTAL` são descartadas** para não dobrar o somatório.
+- Colunas não reconhecidas vão para `dados_extra` em JSON.
+
+### Fonte "Não identificada"
+
+Relatório em PDF costuma trazer, na mesma coluna da fonte, coisas que não são fonte:
+rodapé (`Página: 1/5`), linha de `SALDO`, o próprio somatório (`35.094.246,46`), traços
+e `#`. Sem tratamento, cada um desses textos virava uma **fonte nova** no sistema.
+
+Agora essas linhas vão todas para uma única fonte chamada **`Não identificada`**, que
+aparece destacada em laranja nas abas. Nada é descartado em silêncio: o texto original
+da coluna fica guardado em `dados_extra` (`"Fonte (não reconhecida)"`), e a operadora
+revisa o que caiu ali antes de empenhar.
+
+O critério está em `lib/parser.js` → `fonteReconhecivel()`. É recusado o que:
+
+- começa com `SALDO`, `TOTAL`, `PÁGINA`, `FOLHA`, `RESUMO`, `LÍQUIDO`…;
+- não tem nenhuma letra ou dígito (`#`, `-`, `---`);
+- tem cara de dinheiro (`35.094.246,46`, `(35.094.246,46)`, `1389726.59`) — repare que
+  **código de fonte inteiro passa** (`1500100102`, `101`), porque fonte não tem centavos;
+- é só zero.
+
+Linhas sem fonte **e** sem valor continuam sendo ignoradas: não carregam informação.
+
+### Limpeza de fontes vazias
+
+Fontes que ficaram sem nenhum item e sem teto (resíduo de importação corrigida ou de
+planilha excluída) aparecem no rodapé da tela de empenho com um botão **Remover fontes
+vazias**. Fontes com teto definido nunca entram nessa lista.
+
+Ao final do upload a tela mostra qual coluna da planilha virou qual campo, quantas
+linhas entraram e quantas foram ignoradas.
+
+### Quando o reconhecimento automático não acerta
+
+Nenhuma lista de sinônimos cobre todo relatório. Se o arquivo usar abreviações como
+`FR`, `Vl. Líq.` ou `Cad.`, o sistema **não desiste**: abre a tela de **mapeamento
+manual**, mostrando as primeiras linhas exatamente como foram lidas. Ali a operadora:
+
+1. clica na linha que é o cabeçalho (o sistema já dá um palpite: a linha com mais
+   células preenchidas);
+2. escolhe, em listas suspensas, qual coluna é a Fonte e qual é o Valor — os demais
+   campos são opcionais.
+
+A coluna de Valor costuma vir pré-selecionada mesmo sem título reconhecível, porque o
+sistema procura a coluna cujos dados têm cara de dinheiro (`1.234,56`, `R$ 1.234,56`).
+
+Isso vale para os dois caminhos: upload direto na aba Empenho e "Importar para o
+empenho" depois da conversão.
+
+---
+
+## Conversor para Excel
+
+Aba própria no topo da tela. Aceita **PDF, CSV, TXT, XLS, XLSX, XLSB e ODS** e sempre
+devolve um `.xlsx`.
+
+### Como o PDF vira tabela
+
+Não existe "tabela" dentro de um PDF — existe texto solto com coordenadas. O conversor
+reconstrói a grade assim (`lib/conversor.js`):
+
+1. **Extrai cada trecho de texto** com posição (x, y), largura e altura via `pdfjs-dist`.
+2. **Agrupa em linhas** pela coordenada Y, com tolerância proporcional ao tamanho da fonte.
+3. **Descobre as colunas por corredores em branco**: marca em um mapa de ocupação todo o
+   espaço horizontal usado por texto e procura faixas verticais vazias de 5 pontos ou mais.
+   Esse método funciona igualmente com texto alinhado à esquerda e com valores alinhados
+   à direita — agrupar pela coordenada inicial quebraria a coluna de valores.
+   Linhas com um único trecho (títulos, rodapés) ficam de fora desse cálculo, senão um
+   título largo apagaria todos os corredores.
+4. **A grade é calculada com todas as páginas juntas**, porque relatório de folha mantém
+   o mesmo leiaute — assim as colunas ficam alinhadas ao unir as páginas.
+5. **Cabeçalhos repetidos** nas páginas 2 em diante são removidos (opcional).
+
+Opções na tela: juntar tudo em uma aba (padrão) ou gerar **uma aba por página**.
+
+### Tipagem das células
+
+- `1.234,56` e `R$ 1.234,56` viram **número** — dá para somar no Excel na hora.
+- Inteiros longos (matrícula, CPF, código) ficam como **texto**, para não perder zeros à
+  esquerda nem virar notação científica.
+- A largura das colunas é ajustada pelo conteúdo.
+
+### Limitação
+
+**PDF digitalizado (imagem) não funciona** — não há texto para extrair e o sistema não faz
+OCR. O erro é explícito nesse caso, em vez de gerar uma planilha vazia.
+
+### Do PDF ao empenho em dois cliques
+
+Depois de converter, o botão **Importar para o empenho** manda o resultado direto para o
+importador — sem passar por download. Se as colunas não forem reconhecidas (falta "Fonte"
+ou "Valor"), o sistema avisa e o arquivo continua disponível para download, para ajuste
+manual no Excel.
+
+Os arquivos convertidos ficam **em memória por 30 minutos** e depois são descartados —
+não acumulam lixo em disco.
+
+---
+
+## Operação no dia a dia
+
+1. **Importar planilha** → o sistema cria as fontes e distribui as linhas.
+2. Escolher a aba da fonte e informar o **teto orçamentário** → *Salvar teto*.
+3. Marcar o *checkbox* **Empenho** de cada item — o saldo, a barra e os totais do
+   topo se atualizam na hora.
+4. Para grandes volumes: selecionar vários itens pela coluna da esquerda e usar
+   **Empenhar selecionados** (a validação de teto considera o conjunto).
+5. **Exportar CSV** ao final para anexar ao processo.
+
+Desmarcar o *checkbox* estorna o item e devolve o valor ao saldo.
+
+---
+
+## Notas de implantação
+
+- O banco fica em `data/empenho.db` (SQLite, modo WAL). Backup = copiar esse arquivo.
+  Para começar do zero, pare o servidor e apague `data/empenho.db*`.
+- Não há autenticação: o sistema pressupõe uso em rede interna. O campo
+  `empenhado_por` já existe para receber o usuário quando houver login (hoje grava
+  `operador`).
+- Limite de upload: 25 MB (ajustável em `server.js`, opção `limits.fileSize`).
+- Listagem limitada a 5.000 linhas por fonte na tela; acima disso, use os filtros.
