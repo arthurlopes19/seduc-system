@@ -343,3 +343,11 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--primaria
   border: 1px solid var(--borda-forte); border-radius: 9px;
   padding: 9px 12px; font-size: 14px; font-family: inherit; width: 240px;
 }
+
+/* ---------- Faixa de consolidação ---------- */
+.faixa-consolidar {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  border-left: 4px solid var(--primaria);
+}
+.faixa-consolidar h2 { font-size: 17px; }
+.faixa-consolidar .painel-sub { max-width: 62ch; }

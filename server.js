@@ -705,6 +705,18 @@ app.delete('/api/importe/:tipo', rota(async (req, res) => {
   res.json({ ok: await importe.limpar(tipo) });
 }));
 
+/**
+ * Consolida: transforma a Importação 2 na base de trabalho da aba Empenho.
+ * Body opcional: { tetoPor: 'receita' | 'folha' }.
+ */
+app.post('/api/importe/consolidar', rota(async (req, res) => {
+  try {
+    res.json(await importe.consolidarParaEmpenho({ tetoPor: req.body?.tetoPor }));
+  } catch (e) {
+    res.status(e.status || 500).json({ erro: e.message });
+  }
+}));
+
 /** Exporta a consolidação em CSV. */
 app.get('/api/importe/export.csv', rota(async (_req, res) => {
   const dados = await importe.consolidar();

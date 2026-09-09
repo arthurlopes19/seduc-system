@@ -174,6 +174,9 @@ function renderConsolidado() {
   renderTabelaGrupos();
   renderNaturezas();
   renderFontes();
+
+  // Consolidar só faz sentido com a Importação 2 carregada.
+  $('#faixa-consolidar').hidden = !dados.importacoes.empenho;
 }
 
 /*
@@ -337,4 +340,51 @@ $('#busca-natureza').oninput = (e) => {
   clearTimeout(timerNatureza);
   const valor = e.target.value;
   timerNatureza = setTimeout(() => { imp.buscaNatureza = valor; renderNaturezas(); }, 200);
+};
+
+/* ---------------- consolidar para a base de empenho ---------------- */
+
+$('#btn-consolidar').onclick = async () => {
+  const dados = imp.consolidado;
+  const fontes = dados.fontes.length;
+  const itens = dados.importacoes.empenho?.itens || 0;
+  const receita = dados.totais.receitaCentavos;
+
+  const pergunta = [
+    'Levar a Importação 2 para a tela de empenho?',
+    '',
+    `· ${itens} itens em ${fontes} fonte(s)`,
+    `· teto de cada fonte = receita disponível (total ${fmt(receita)})`,
+    '· os itens já empenhados continuam marcados',
+    '',
+    'A base atual da tela de empenho será substituída.',
+  ].join('\n');
+  if (!confirm(pergunta)) return;
+
+  const botao = $('#btn-consolidar');
+  botao.disabled = true;
+  botao.textContent = 'Consolidando…';
+
+  try {
+    const r = await api('/api/importe/consolidar', {
+      method: 'POST',
+      body: JSON.stringify({ tetoPor: 'receita' }),
+    });
+    avisar(
+      `Base consolidada: ${r.linhas} itens em ${r.fontes} fontes`
+      + (r.restaurados ? ` · ${r.restaurados} empenho(s) mantido(s)` : ''),
+      'ok'
+    );
+    // A tela de empenho passa a ler a base nova.
+    await carregarFontes(false);
+    await carregarArquivos();
+  } catch (e) {
+    const retorno = $('#importe-retorno');
+    retorno.className = 'retorno erro';
+    retorno.textContent = e.message;
+    retorno.hidden = false;
+  } finally {
+    botao.disabled = false;
+    botao.textContent = 'Consolidar';
+  }
 };

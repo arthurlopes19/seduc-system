@@ -472,11 +472,35 @@ Um detalhe que rendeu itens fantasmas até ser tratado: o cabeçalho
 como um item, e tem uma barra na competência, exatamente como um grupo — ele é descartado
 antes das duas verificações.
 
+### Consolidar para o Empenho
+
+A conferência não é o fim: a Importação 2 vira a **base de trabalho** da tela de empenho.
+O botão *Consolidar* apaga a base anterior e reconstrói a partir dela — uma importação,
+uma base, as duas telas.
+
+Duas decisões que essa ação toma:
+
+**O teto de cada fonte passa a ser a RECEITA**, não a folha prevista. Com a folha como
+teto o saldo daria zero sempre e o controle não controlaria nada. Com a receita, o total
+fecha em R$ 395.065.750,47 contra R$ 374.721.680,27 a pagar — a folga real de
+R$ 20.344.070,20.
+
+Receita zero é informação, não ausência de dado: a fonte `1540107243` (ETI) paga folha
+sem receita própria — o documento mostra saldo negativo nela, coberto pela sobra da
+`1540107043`. Ela fica com **teto zero**, e não com o valor da folha: cair para a folha
+inventaria um teto que não existe e inflaria o total em R$ 35 milhões.
+
+**Os empenhos já marcados são preservados.** Antes de apagar, o sistema guarda a
+combinação `fonte + código + ação + plano interno + grupo` de cada item marcado e devolve
+a marcação depois de recarregar. Reconsolidar no meio do mês não faz a operadora refazer o
+trabalho.
+
 ### Rotas
 
 | Método | Rota | Descrição |
 |---|---|---|
 | `POST` | `/api/importe/folha` | Importação 1 (multipart `arquivo`) |
+| `POST` | `/api/importe/consolidar` | leva a Importação 2 para a base de empenho |
 | `POST` | `/api/importe/empenho` | Importação 2 (multipart `arquivo`) |
 | `GET` | `/api/importe/consolidado` | a base consolidada: grupos, fontes e totais |
 | `GET` | `/api/importe/grupo/:chave` | itens do empenho e total da folha de um grupo |
