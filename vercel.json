@@ -1,12 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
-    { "source": "/api/:caminho*", "destination": "/api" }
+    {
+      "source": "/api/:caminho*",
+      "destination": "/api"
+    }
   ],
   "functions": {
     "api/index.js": {
       "maxDuration": 30,
-      "memory": 1024
+      "memory": 1024,
+      "includeFiles": "node_modules/pdfjs-dist/legacy/build/**"
     }
   }
 }
