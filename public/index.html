@@ -18,7 +18,7 @@
     </div>
     <nav class="nav-principal" id="nav-principal">
       <button data-view="empenho" class="ativo">Empenho</button>
-      <button data-view="conversor">Conversor para Excel</button>
+      <button data-view="importe">Importe</button>
     </nav>
     <button id="btn-abrir-upload" class="btn btn-primario">Importar planilha</button>
   </header>
@@ -121,82 +121,171 @@
     </section>
   </main>
 
-  <!-- ================= CONVERSOR PARA EXCEL ================= -->
-  <main class="conteudo" id="view-conversor" hidden>
-    <section class="painel painel-solto">
-      <div class="painel-cabecalho">
-        <div>
-          <h2>Converter arquivo para Excel</h2>
-          <p class="painel-sub">
-            Transforma <b>PDF</b>, <b>CSV</b>, <b>TXT</b>, <b>XLS</b> e <b>ODS</b> em uma
-            planilha <b>.xlsx</b>. No PDF, a tabela é reconstruída pela posição do texto
-            na página — não é necessário selecionar nada manualmente.
-          </p>
-        </div>
-      </div>
+  <!-- ================= IMPORTE ================= -->
+  <main class="conteudo" id="view-importe" hidden>
 
-      <label class="area-drop area-drop-larga" id="conv-drop">
-        <input type="file" id="conv-arquivo" accept=".pdf,.csv,.txt,.xls,.xlsx,.xlsm,.xlsb,.ods" hidden />
-        <strong>Clique para escolher o arquivo</strong>
-        <span>ou arraste aqui — PDF, CSV, TXT, XLS, XLSX, ODS (até 25 MB)</span>
-        <em id="conv-nome"></em>
-      </label>
-
-      <div class="conv-opcoes">
-        <fieldset>
-          <legend>PDF com várias páginas</legend>
-          <label><input type="radio" name="conv-abas" value="unica" checked /> Juntar tudo em uma aba</label>
-          <label><input type="radio" name="conv-abas" value="pagina" /> Uma aba por página</label>
-        </fieldset>
-        <label class="conv-check">
-          <input type="checkbox" id="conv-remover-cabecalho" checked />
-          Remover cabeçalhos repetidos das páginas seguintes
+    <!-- as duas fontes de dados -->
+    <section class="importe-fontes">
+      <article class="cartao-importe" id="card-folha">
+        <header>
+          <span class="etiqueta-importe">Importação 1</span>
+          <h2>Relatório da folha</h2>
+          <p>O que a folha pagou. PDF do SIAFEM — “Classificação Orçamentária com
+             Regime de Previdência Social”.</p>
+        </header>
+        <label class="area-drop" id="drop-folha">
+          <input type="file" id="arq-folha" accept=".pdf" hidden />
+          <strong>Escolher arquivo</strong>
+          <span>ou arraste o PDF aqui</span>
+          <em id="nome-folha"></em>
         </label>
-        <div class="filtros-espaco"></div>
-        <button class="btn btn-primario" id="conv-converter" disabled>Converter para Excel</button>
+        <div class="importe-acoes">
+          <button class="btn btn-primario" id="btn-enviar-folha" disabled>Importar</button>
+          <button class="btn btn-secundario" id="btn-limpar-folha" hidden>Remover</button>
+        </div>
+        <div class="importe-status" id="status-folha" hidden></div>
+      </article>
+
+      <article class="cartao-importe" id="card-empenho">
+        <header>
+          <span class="etiqueta-importe">Importação 2</span>
+          <h2>Documento de empenho</h2>
+          <p>O que tem que ser pago, com a <b>fonte que vale</b>. Aceita o PDF assinado
+             ou a planilha equivalente.</p>
+        </header>
+        <label class="area-drop" id="drop-empenho">
+          <input type="file" id="arq-empenho" accept=".pdf,.xlsx,.xls,.xlsm,.ods" hidden />
+          <strong>Escolher arquivo</strong>
+          <span>ou arraste o PDF / planilha aqui</span>
+          <em id="nome-empenho"></em>
+        </label>
+        <div class="importe-acoes">
+          <button class="btn btn-primario" id="btn-enviar-empenho" disabled>Importar</button>
+          <button class="btn btn-secundario" id="btn-limpar-empenho" hidden>Remover</button>
+        </div>
+        <div class="importe-status" id="status-empenho" hidden></div>
+      </article>
+    </section>
+
+    <div class="retorno" id="importe-retorno" hidden></div>
+
+    <!-- consolidação -->
+    <section id="consolidado" hidden>
+      <div class="resumo resumo-3">
+        <article class="cartao">
+          <span class="cartao-rotulo">A pagar (Importação 2)</span>
+          <strong class="cartao-valor" id="cons-empenho">R$ 0,00</strong>
+        </article>
+        <article class="cartao">
+          <span class="cartao-rotulo">Pago na folha (Importação 1)</span>
+          <strong class="cartao-valor cor-empenhado" id="cons-folha">R$ 0,00</strong>
+        </article>
+        <article class="cartao">
+          <span class="cartao-rotulo">Diferença</span>
+          <strong class="cartao-valor" id="cons-diferenca">R$ 0,00</strong>
+          <span class="cartao-nota" id="cons-diferenca-nota"></span>
+        </article>
       </div>
 
-      <p class="conv-nota">
-        PDFs digitalizados (foto ou scanner) não têm texto selecionável e não podem ser
-        convertidos aqui — seria necessário OCR.
-      </p>
-
-      <div class="retorno" id="conv-retorno" hidden></div>
-
-      <div id="conv-resultado" hidden>
-        <div class="conv-resumo">
-          <div><span>Arquivo gerado</span><b id="conv-r-nome">—</b></div>
-          <div><span>Origem</span><b id="conv-r-origem">—</b></div>
-          <div><span>Abas</span><b id="conv-r-abas">—</b></div>
-          <div><span>Linhas</span><b id="conv-r-linhas">—</b></div>
+      <div class="painel painel-solto">
+        <div class="painel-cabecalho">
+          <div>
+            <h2>Base consolidada por grupo</h2>
+            <p class="painel-sub" id="cons-sub">—</p>
+          </div>
+          <div class="painel-acoes">
+            <div class="segmentado" id="filtro-cons">
+              <button data-filtro="todos" class="ativo">Todos</button>
+              <button data-filtro="diferenca">Com diferença</button>
+              <button data-filtro="movimento">Com movimento</button>
+            </div>
+            <a class="btn btn-secundario" id="btn-exportar-cons" href="/api/importe/export.csv">Exportar CSV</a>
+          </div>
         </div>
 
-        <div class="conv-acoes">
-          <a class="btn btn-primario" id="conv-baixar" href="#" download>Baixar .xlsx</a>
-          <button class="btn btn-secundario" id="conv-importar">Importar para o empenho</button>
-        </div>
-
-        <h3 class="conv-titulo-previa">Prévia do resultado</h3>
-        <div class="abas abas-previa" id="conv-abas-previa"></div>
         <div class="tabela-caixa">
-          <table class="tabela tabela-previa"><tbody id="conv-previa"></tbody></table>
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th>Grupo</th>
+                <th class="col-valor">A pagar</th>
+                <th class="col-valor">Folha</th>
+                <th class="col-valor">Diferença</th>
+                <th class="col-status">Situação</th>
+              </tr>
+            </thead>
+            <tbody id="cons-corpo"></tbody>
+          </table>
         </div>
-        <p class="conv-nota" id="conv-previa-nota"></p>
+      </div>
+
+      <div class="painel painel-solto" id="painel-naturezas" hidden>
+        <div class="painel-cabecalho">
+          <div>
+            <h2>Naturezas de despesa</h2>
+            <p class="painel-sub" id="nat-sub">—</p>
+          </div>
+          <div class="painel-acoes">
+            <input type="search" id="busca-natureza" placeholder="Buscar código ou descrição…" />
+          </div>
+        </div>
+        <div class="tabela-caixa">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th class="col-codigo">Código</th>
+                <th>Descrição</th>
+                <th class="col-codigo">Cód. empenho</th>
+                <th class="col-valor">RPPS</th>
+                <th class="col-valor">RGPS</th>
+                <th class="col-valor">Militar</th>
+                <th class="col-valor">Outros</th>
+                <th class="col-valor">Total</th>
+              </tr>
+            </thead>
+            <tbody id="nat-corpo"></tbody>
+            <tfoot id="nat-rodape"></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div class="painel painel-solto" id="painel-fontes" hidden>
+        <div class="painel-cabecalho">
+          <div>
+            <h2>Fontes de recurso</h2>
+            <p class="painel-sub">Da Importação 2 — é esta a fonte válida, não a que aparece no relatório da folha.</p>
+          </div>
+        </div>
+        <div class="tabela-caixa">
+          <table class="tabela">
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Fonte</th>
+                <th class="col-valor">Folha</th>
+                <th class="col-valor">Receita</th>
+                <th class="col-valor">Saldo</th>
+              </tr>
+            </thead>
+            <tbody id="fontes-corpo"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
-    <section class="arquivos" id="conv-historico-secao" hidden>
-      <h3>Convertidos nesta sessão</h3>
-      <ul id="conv-historico"></ul>
+    <section class="estado-vazio" id="importe-vazio">
+      <h2>Importe os dois documentos</h2>
+      <p>A consolidação aparece quando pelo menos um dos dois for importado — e fica
+         completa com os dois, cruzando grupo a grupo.</p>
     </section>
   </main>
 
   <!-- ---------------- Modal de upload ---------------- -->
   <dialog id="modal-upload" class="modal">
-    <form method="dialog" class="modal-fechar"><button aria-label="Fechar">×</button></form>
+    <form method="dialog" class="modal-fechar"><button aria-label="Fechar">Ã—</button></form>
     <h2>Importar planilha da folha</h2>
-    <p class="modal-sub">Formatos aceitos: .xlsx, .xls ou .csv (até 25 MB).
-       Obrigatório conter colunas de <b>Fonte</b> e <b>Valor</b>.</p>
+    <p class="modal-sub">Formatos aceitos: .xlsx, .xls ou .csv (atÃ© 25 MB).
+       ObrigatÃ³rio conter colunas de <b>Fonte</b> e <b>Valor</b>.</p>
 
     <label class="area-drop" id="area-drop">
       <input type="file" id="input-arquivo" accept=".xlsx,.xls,.xlsm,.csv,.txt" hidden />
@@ -241,7 +330,7 @@
   <div id="avisos" class="avisos" aria-live="polite"></div>
 
   <script src="app.js"></script>
+  <script src="importe.js"></script>
   <script src="mapeamento.js"></script>
-  <script src="conversor.js"></script>
 </body>
 </html>

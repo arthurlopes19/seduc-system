@@ -1,12 +1,12 @@
 # Sistema de Empenho — SEDUC
 
-Duas ferramentas em um só sistema:
+Duas telas:
 
-1. **Empenho** — importa a planilha da folha, separa os itens por **Fonte** de recurso,
-   permite definir um **teto orçamentário** por fonte e dá baixa item a item por
-   *checkbox*, abatendo o valor do teto em tempo real.
-2. **Conversor para Excel** — transforma PDF, CSV, TXT, XLS e ODS em `.xlsx`, com opção
-   de mandar o resultado direto para o controle de empenho.
+1. **Empenho** — importa a planilha, separa os itens por **Fonte** de recurso, permite
+   definir um **teto orçamentário** por fonte e dá baixa item a item por *checkbox*,
+   abatendo o valor do teto em tempo real.
+2. **Importe** — recebe os **dois documentos** da competência e cruza um com o outro:
+   o que tem que ser pago × o que a folha efetivamente pagou, grupo a grupo.
 
 ---
 
@@ -16,8 +16,8 @@ Duas ferramentas em um só sistema:
 |-----------|------------|
 | Backend   | Node.js 22+ · Express |
 | Banco     | SQLite (`node:sqlite`) no desenvolvimento · **PostgreSQL** em produção |
+| PDF       | `pdfjs-dist` — extração de texto com coordenadas |
 | Planilhas | SheetJS (`xlsx`) para XLSX/XLS · parser próprio para CSV (`;`, aspas, Latin-1) |
-| PDF       | `pdfjs-dist` — extração de texto com coordenadas para remontar a tabela |
 | Frontend  | HTML + CSS + JavaScript puro (sem build, sem framework) |
 
 ## Como rodar
@@ -42,12 +42,6 @@ npm run exemplo
 O arquivo sai em `data/exemplo-folha.xlsx` (120 linhas, 5 fontes, com linha de título
 e linha de "TOTAL GERAL" — que o sistema ignora automaticamente).
 
-Para testar o conversor, um relatório em PDF de 3 páginas:
-
-```bash
-npm run exemplo-pdf
-```
-
 ---
 
 ## Estrutura
@@ -60,16 +54,21 @@ seduc-sistema/
 ├── vercel.json               # roteamento /api/* -> função
 ├── lib/
 │   ├── parser.js             # leitura de XLSX/CSV e detecção de colunas
-│   ├── conversor.js          # conversão PDF/CSV/XLS -> XLSX
+│   ├── parser-padrao.js      # leitura da planilha padrão (uma aba por fonte)
+│   ├── parser-folha.js       # Importação 1 — relatório da folha (PDF)
+│   ├── parser-empenho.js     # Importação 2 — documento de empenho (PDF/XLSX)
+│   ├── posicao-pdf.js        # leitura de PDF preservando a posição do texto
+│   ├── grupos.js             # os 67 grupos oficiais e o casamento por nome cortado
+│   ├── importe.js            # gravação das duas importações e a consolidação
 │   └── util.js               # normalização de texto e conversão de valores
 ├── public/                   # interface (servida como estático)
 │   ├── index.html
 │   ├── styles.css
-│   ├── app.js                # aba Empenho
-│   └── conversor.js          # aba Conversor
+│   ├── app.js                # tela de empenho
+│   ├── importe.js            # aba Importe
+│   └── mapeamento.js         # tela de mapeamento manual de colunas
 ├── scripts/
 │   ├── gerar-planilha-exemplo.js
-│   ├── gerar-pdf-exemplo.js
 │   └── migrar-para-postgres.js
 └── data/                     # banco SQLite (empenho.db) e planilhas de exemplo
 ```
@@ -161,12 +160,8 @@ saldo     = fontes.teto_centavos - empenhado
 | `GET` | `/api/resumo` | totais consolidados |
 | `GET` | `/api/fontes/:id/export.csv` | exporta a fonte com o status de cada item |
 | `GET` | `/api/saude` | diagnóstico: qual banco está ativo e quantas fontes existem |
-| `POST` | `/api/converter` | converte um arquivo para `.xlsx` e devolve resumo + prévia |
-| `GET` | `/api/converter/:id/download` | baixa o `.xlsx` gerado |
-| `POST` | `/api/converter/:id/importar` | manda o convertido direto para o empenho |
 
-Tanto `/api/arquivos` quanto `/api/converter/:id/importar` aceitam um **mapeamento
-manual** opcional, usado quando o reconhecimento automático não acerta:
+`/api/arquivos` aceita um **mapeamento manual** opcional, usado quando o reconhecimento automático não acerta:
 
 ```json
 { "indiceLinha": 3, "mapa": { "fonte": 3, "valor": 5, "nome": 1, "matricula": 0 } }
@@ -389,56 +384,111 @@ manual**, mostrando as primeiras linhas exatamente como foram lidas. Ali a opera
 A coluna de Valor costuma vir pré-selecionada mesmo sem título reconhecível, porque o
 sistema procura a coluna cujos dados têm cara de dinheiro (`1.234,56`, `R$ 1.234,56`).
 
-Isso vale para os dois caminhos: upload direto na aba Empenho e "Importar para o
-empenho" depois da conversão.
+Isso vale para o upload de planilha na tela de empenho.
 
 ---
 
-## Conversor para Excel
+## Aba Importe — as duas importações
 
-Aba própria no topo da tela. Aceita **PDF, CSV, TXT, XLS, XLSX, XLSB e ODS** e sempre
-devolve um `.xlsx`.
+A aba recebe duas fontes de dados distintas e consolida uma base única a partir delas.
 
-### Como o PDF vira tabela
+| | Documento | O que é | Formato |
+|---|---|---|---|
+| **Importação 1** | Relatório da folha (SIAFEM / PPAREL14) | o que a folha **pagou** | PDF |
+| **Importação 2** | Documento de empenho | o que **tem que ser pago** | PDF ou XLSX |
 
-Não existe "tabela" dentro de um PDF — existe texto solto com coordenadas. O conversor
-reconstrói a grade assim (`lib/conversor.js`):
+Cada tipo guarda só a importação mais recente: reenviar substitui a anterior.
 
-1. **Extrai cada trecho de texto** com posição (x, y), largura e altura via `pdfjs-dist`.
-2. **Agrupa em linhas** pela coordenada Y, com tolerância proporcional ao tamanho da fonte.
-3. **Descobre as colunas por corredores em branco**: marca em um mapa de ocupação todo o
-   espaço horizontal usado por texto e procura faixas verticais vazias de 5 pontos ou mais.
-   Esse método funciona igualmente com texto alinhado à esquerda e com valores alinhados
-   à direita — agrupar pela coordenada inicial quebraria a coluna de valores.
-   Linhas com um único trecho (títulos, rodapés) ficam de fora desse cálculo, senão um
-   título largo apagaria todos os corredores.
-4. **A grade é calculada com todas as páginas juntas**, porque relatório de folha mantém
-   o mesmo leiaute — assim as colunas ficam alinhadas ao unir as páginas.
-5. **Cabeçalhos repetidos** nas páginas 2 em diante são removidos (opcional).
+### A ligação entre os dois: o GRUPO
 
-Opções na tela: juntar tudo em uma aba (padrão) ou gerar **uma aba por página**.
+Os documentos não têm nenhuma chave em comum além do grupo
+(`GRUPO / NÍVEL / MODALIDADE`). A lista oficial dos **67 grupos** está em
+`lib/grupos.js` e é a espinha dorsal da consolidação — um grupo ausente nos dois
+documentos ainda aparece, zerado, para não sumir da conferência.
 
-### Tipagem das células
+O casamento tem uma sutileza: o relatório da folha **corta o nome do grupo** num tamanho
+fixo, e o corte cai no meio da palavra —
+`EDUCAÇÃO PROFISSIONAL TÉCNICA` vira `EDUC PROFIS TECNIC`, às vezes comendo a última
+palavra inteira. Comparar texto com texto produzia diferenças falsas de milhões. Por isso
+`casaComOficial()` compara **palavra a palavra**, cada uma do texto cortado tendo que ser
+o início da palavra oficial correspondente.
 
-- `1.234,56` e `R$ 1.234,56` viram **número** — dá para somar no Excel na hora.
-- Inteiros longos (matrícula, CPF, código) ficam como **texto**, para não perder zeros à
-  esquerda nem virar notação científica.
-- A largura das colunas é ajustada pelo conteúdo.
+### A fonte que vale
 
-### Limitação
+A **Importação 2** é a autoridade sobre a fonte de recurso. O relatório da folha também
+imprime uma etiqueta `FONTE:`, mas ela repete o mesmo código em todas as páginas e não
+corresponde à distribuição real — o sistema a guarda apenas como referência e não a usa.
 
-**PDF digitalizado (imagem) não funciona** — não há texto para extrair e o sistema não faz
-OCR. O erro é explícito nesse caso, em vez de gerar uma planilha vazia.
+A Importação 2 em PDF traz ainda o quadro final por fonte:
 
-### Do PDF ao empenho em dois cliques
+| | |
+|---|---|
+| **Folha** | o que será pago naquela fonte |
+| **Receita** | o que existe disponível |
+| **Saldo** | Receita − Folha |
 
-Depois de converter, o botão **Importar para o empenho** manda o resultado direto para o
-importador — sem passar por download. Se as colunas não forem reconhecidas (falta "Fonte"
-ou "Valor"), o sistema avisa e o arquivo continua disponível para download, para ajuste
-manual no Excel.
+A versão em planilha não tem esse quadro (traz só a meta, equivalente à coluna Folha).
 
-Os arquivos convertidos ficam **em memória por 30 minutos** e depois são descartados —
-não acumulam lixo em disco.
+### O que a consolidação mostra
+
+Para cada um dos 67 grupos: **A pagar** (Importação 2), **Folha** (Importação 1),
+**Diferença** e a situação:
+
+| Situação | Significado |
+|---|---|
+| `confere` | os dois valores batem |
+| `não saiu na folha` | tem empenho previsto, a folha não pagou |
+| `saiu a menor` / `saiu a maior` | pagou diferente do previsto |
+| `fora do empenho` | a folha pagou algo que não estava previsto |
+| `sem movimento` | zerado nos dois lados |
+
+### Leitura do relatório da folha (Importação 1)
+
+`lib/parser-folha.js` extrai as três informações que interessam:
+
+1. **o código da natureza** — qualquer coisa no formato `d.d.dd.dd.dd`
+   (`3.1.90.11.01`), por padrão e não por lista fixa: códigos novos entram sozinhos;
+2. **os valores separados** — a linha `Total Líquido:` traz cinco números, nesta ordem:
+   *total, RPPS, RGPS, Militar, Outros*;
+3. **o total** — `TOTAL DA FOLHA = (C)`, um por folha, somados por grupo.
+
+Os códigos aparecem na tela num painel próprio, com busca. O mesmo código pode vir com
+descrições diferentes ao longo do relatório (`3.1.90.11.01` aparece como "DESPESAS
+CORRENTES" e como "VENCIMENTOS E SALARIOS"): eles são somados num único código, ficando
+com a descrição do maior valor. A coluna **Cód. empenho** mostra o código de 6 dígitos
+equivalente (`3.1.90.11.06` → `319011`), que é como esse mesmo gasto aparece no documento
+de empenho.
+
+### Leitura do documento de empenho (Importação 2)
+
+`lib/parser-empenho.js` lê as duas formas do mesmo conteúdo. No PDF, as colunas são
+separadas **pelo formato de cada campo**, não pela posição horizontal: ação tem 6
+dígitos, valor tem vírgula decimal, plano interno é alfanumérico e fonte tem 10 dígitos.
+Cortar por posição perdia a coluna Fonte, porque o rótulo do cabeçalho fica alguns pontos
+à direita dos dados.
+
+Um detalhe que rendeu itens fantasmas até ser tratado: o cabeçalho
+`160102 – FUNDEB – SEDUC – FOLHA:08/2026` começa com 6 dígitos e um traço, exatamente
+como um item, e tem uma barra na competência, exatamente como um grupo — ele é descartado
+antes das duas verificações.
+
+### Rotas
+
+| Método | Rota | Descrição |
+|---|---|---|
+| `POST` | `/api/importe/folha` | Importação 1 (multipart `arquivo`) |
+| `POST` | `/api/importe/empenho` | Importação 2 (multipart `arquivo`) |
+| `GET` | `/api/importe/consolidado` | a base consolidada: grupos, fontes e totais |
+| `GET` | `/api/importe/grupo/:chave` | itens do empenho e total da folha de um grupo |
+| `GET` | `/api/importe/naturezas` | naturezas de despesa da Importação 1 |
+| `GET` | `/api/importe/export.csv` | consolidação em CSV |
+| `DELETE` | `/api/importe/:tipo` | remove `folha` ou `empenho` |
+
+### Tabelas
+
+`importes` (um registro por tipo), `importe_grupos` (o total por grupo — a chave da
+junção), `importe_naturezas` (Importação 1), `importe_itens` e `importe_fontes`
+(Importação 2).
 
 ---
 
@@ -473,9 +523,6 @@ Por isso o sistema tem dois drivers de banco (`db.js`), com a mesma interface:
 
 Duas outras coisas mudaram para o modo serverless funcionar:
 
-- **Arquivos convertidos** (aba Conversor) ficavam em memória, esperando o download. Em
-  serverless o download cairia em outra instância e daria 404. Passaram para a tabela
-  `conversoes`, e somem sozinhos depois de 30 minutos.
 - **Limite de upload**: a Vercel corta o corpo da requisição em ~4,5 MB. O sistema detecta
   que está lá e recusa antes, com mensagem clara, em vez de deixar o navegador dar erro de
   rede. Localmente o limite continua 25 MB.

@@ -96,14 +96,79 @@ function esquema(driver) {
       criado_em       TEXT
     )`,
 
-    // Arquivos convertidos aguardando download/importação. Em serverless não
-    // dá para guardar em memória: cada requisição pode cair em outra máquina.
-    `CREATE TABLE IF NOT EXISTS conversoes (
-      id          TEXT PRIMARY KEY,
-      nome_saida  TEXT NOT NULL,
-      conteudo    ${t.binario} NOT NULL,
-      criado_em   TEXT NOT NULL
+    /* ---------- Aba "Importe": as duas importações e a consolidação ---------- */
+
+    // Um envio de arquivo. tipo: 'folha' (Importação 1) ou 'empenho' (Importação 2).
+    `CREATE TABLE IF NOT EXISTS importes (
+      id              ${t.id},
+      tipo            TEXT NOT NULL,
+      nome_arquivo    TEXT NOT NULL,
+      origem          TEXT,
+      competencia     TEXT,
+      total_centavos  ${t.inteiro} NOT NULL DEFAULT 0,
+      liquido_centavos ${t.inteiro} NOT NULL DEFAULT 0,
+      itens           ${t.inteiro} NOT NULL DEFAULT 0,
+      avisos          TEXT,
+      enviado_em      TEXT NOT NULL
     )`,
+
+    // Total por grupo — a chave que liga as duas importações.
+    `CREATE TABLE IF NOT EXISTS importe_grupos (
+      id               ${t.id},
+      importe_id       ${t.inteiro} NOT NULL REFERENCES importes(id) ON DELETE CASCADE,
+      grupo            TEXT NOT NULL,
+      grupo_chave      TEXT NOT NULL,
+      reconhecido      ${t.inteiro} NOT NULL DEFAULT 1,
+      total_centavos   ${t.inteiro} NOT NULL DEFAULT 0,
+      liquido_centavos ${t.inteiro} NOT NULL DEFAULT 0,
+      itens            ${t.inteiro} NOT NULL DEFAULT 0
+    )`,
+
+    // Importação 1: naturezas de despesa (3.1.90.11.01) com os valores separados.
+    `CREATE TABLE IF NOT EXISTS importe_naturezas (
+      id               ${t.id},
+      importe_id       ${t.inteiro} NOT NULL REFERENCES importes(id) ON DELETE CASCADE,
+      natureza         TEXT NOT NULL,
+      descricao        TEXT,
+      grupo_chave      TEXT,
+      fonte_relatorio  TEXT,
+      total_centavos   ${t.inteiro} NOT NULL DEFAULT 0,
+      rpps_centavos    ${t.inteiro} NOT NULL DEFAULT 0,
+      rgps_centavos    ${t.inteiro} NOT NULL DEFAULT 0,
+      militar_centavos ${t.inteiro} NOT NULL DEFAULT 0,
+      outros_centavos  ${t.inteiro} NOT NULL DEFAULT 0,
+      pagina           ${t.inteiro}
+    )`,
+
+    // Importação 2: os itens a pagar, com a FONTE que vale.
+    `CREATE TABLE IF NOT EXISTS importe_itens (
+      id              ${t.id},
+      importe_id      ${t.inteiro} NOT NULL REFERENCES importes(id) ON DELETE CASCADE,
+      grupo           TEXT,
+      grupo_chave     TEXT,
+      codigo          TEXT,
+      acao_despesa    TEXT,
+      acao            TEXT,
+      valor_centavos  ${t.inteiro} NOT NULL DEFAULT 0,
+      plano_interno   TEXT,
+      fonte           TEXT
+    )`,
+
+    // Importação 2: quadro de fontes (folha / receita / saldo).
+    `CREATE TABLE IF NOT EXISTS importe_fontes (
+      id                ${t.id},
+      importe_id        ${t.inteiro} NOT NULL REFERENCES importes(id) ON DELETE CASCADE,
+      codigo            TEXT NOT NULL,
+      titulo            TEXT,
+      folha_centavos    ${t.inteiro} NOT NULL DEFAULT 0,
+      receita_centavos  ${t.inteiro} NOT NULL DEFAULT 0,
+      saldo_centavos    ${t.inteiro} NOT NULL DEFAULT 0
+    )`,
+
+    'CREATE INDEX IF NOT EXISTS idx_importe_grupos    ON importe_grupos(importe_id)',
+    'CREATE INDEX IF NOT EXISTS idx_importe_naturezas ON importe_naturezas(importe_id)',
+    'CREATE INDEX IF NOT EXISTS idx_importe_itens     ON importe_itens(importe_id)',
+    'CREATE INDEX IF NOT EXISTS idx_importe_fontes    ON importe_fontes(importe_id)',
 
     'CREATE INDEX IF NOT EXISTS idx_linhas_fonte   ON linhas(fonte_id)',
     'CREATE INDEX IF NOT EXISTS idx_linhas_arquivo ON linhas(arquivo_id)',

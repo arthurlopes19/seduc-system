@@ -8,8 +8,8 @@ const XLSX = require('xlsx');
 const { db, pronto, agora, DRIVER } = require('./db');
 const { processarPlanilha } = require('./lib/parser');
 const { processarPlanilhaPorFonte, ehPlanilhaPorFonte, COLUNAS } = require('./lib/parser-padrao');
-const { converterParaXlsx } = require('./lib/conversor');
 const { normalizarTexto, paraCentavos, formatarBRL } = require('./lib/util');
+const importe = require('./lib/importe');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -659,90 +659,68 @@ app.post('/api/empenhos', rota(async (req, res) => {
 }));
 
 /* ------------------------------------------------------------------ *
- * Conversor de arquivos para Excel
+ * Aba "Importe" — as duas importações e a consolidação
  * ------------------------------------------------------------------ */
 
-/*
- * O arquivo convertido vai para a tabela `conversoes`, e nao para a memoria:
- * em serverless cada requisicao pode cair em outra instancia, e o download
- * viria depois do POST que converteu. Some sozinho depois de 30 minutos.
- */
-const VALIDADE_CONVERSAO_MIN = 30;
-
-async function limparConversoesVencidas() {
-  const limite = new Date(Date.now() - VALIDADE_CONVERSAO_MIN * 60 * 1000);
-  const p = (n) => String(n).padStart(2, '0');
-  const corte = `${limite.getFullYear()}-${p(limite.getMonth() + 1)}-${p(limite.getDate())} `
-    + `${p(limite.getHours())}:${p(limite.getMinutes())}:${p(limite.getSeconds())}`;
-  await db.executar('DELETE FROM conversoes WHERE criado_em < ?', [corte]);
-}
-
-function nomeDeSaida(nomeEntrada) {
-  const base = String(nomeEntrada || 'arquivo').replace(/\.[^.]+$/, '');
-  return `${base}.xlsx`;
-}
-
-async function obterConversao(id) {
-  const item = await db.um('SELECT id, nome_saida AS "nomeSaida", conteudo FROM conversoes WHERE id = ?', [id]);
-  if (!item) return null;
-  return { nomeSaida: item.nomeSaida, buffer: Buffer.from(item.conteudo) };
-}
-
-app.post('/api/converter', upload.single('arquivo'), rota(async (req, res) => {
+/** Importação 1: relatório da folha (PDF). */
+app.post('/api/importe/folha', upload.single('arquivo'), rota(async (req, res) => {
   if (!req.file) return res.status(400).json({ erro: 'Nenhum arquivo enviado.' });
-
-  const opcoes = {
-    umaAbaPorPagina: req.body?.umaAbaPorPagina === 'true',
-    removerCabecalhosRepetidos: req.body?.removerCabecalhosRepetidos !== 'false',
-  };
-
   try {
-    const { buffer, resumo } = await converterParaXlsx(req.file.buffer, req.file.originalname, opcoes);
-
-    await limparConversoesVencidas();
-    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    const nomeSaida = nomeDeSaida(req.file.originalname);
-
-    await db.executar(
-      'INSERT INTO conversoes (id, nome_saida, conteudo, criado_em) VALUES (?, ?, ?, ?)',
-      [id, nomeSaida, buffer, agora()]
-    );
-
-    res.json({
-      ok: true,
-      id,
-      nomeEntrada: req.file.originalname,
-      nomeSaida,
-      tamanhoBytes: buffer.length,
-      downloadUrl: `/api/converter/${id}/download`,
-      ...resumo,
-    });
+    res.json(await importe.importarFolha(req.file.buffer, req.file.originalname));
   } catch (e) {
     res.status(422).json({ erro: e.message });
   }
 }));
 
-app.get('/api/converter/:id/download', rota(async (req, res) => {
-  const item = await obterConversao(req.params.id);
-  if (!item) {
-    return res.status(404).json({ erro: 'Conversão expirada ou inexistente. Converta o arquivo novamente.' });
+/** Importação 2: documento de empenho (PDF ou planilha). */
+app.post('/api/importe/empenho', upload.single('arquivo'), rota(async (req, res) => {
+  if (!req.file) return res.status(400).json({ erro: 'Nenhum arquivo enviado.' });
+  try {
+    res.json(await importe.importarEmpenho(req.file.buffer, req.file.originalname));
+  } catch (e) {
+    res.status(422).json({ erro: e.message });
   }
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(item.nomeSaida)}"`);
-  res.send(item.buffer);
 }));
 
-/** Manda o arquivo recem-convertido direto para o controle de empenho. */
-app.post('/api/converter/:id/importar', rota(async (req, res) => {
-  const item = await obterConversao(req.params.id);
-  if (!item) {
-    return res.status(404).json({ erro: 'Conversão expirada ou inexistente. Converta o arquivo novamente.' });
+/** A base consolidada: os 67 grupos com os dois lados e a diferença. */
+app.get('/api/importe/consolidado', rota(async (_req, res) => {
+  res.json(await importe.consolidar());
+}));
+
+/** Detalhe de um grupo: itens do empenho + total da folha. */
+app.get('/api/importe/grupo/:chave', rota(async (req, res) => {
+  res.json(await importe.detalharGrupo(req.params.chave));
+}));
+
+/** Naturezas de despesa da Importação 1. */
+app.get('/api/importe/naturezas', rota(async (_req, res) => {
+  res.json(await importe.listarNaturezas());
+}));
+
+app.delete('/api/importe/:tipo', rota(async (req, res) => {
+  const tipo = req.params.tipo;
+  if (tipo !== importe.TIPOS.FOLHA && tipo !== importe.TIPOS.EMPENHO) {
+    return res.status(400).json({ erro: 'Tipo inválido.' });
   }
-  try {
-    res.json(await importarPlanilha(item.buffer, item.nomeSaida, lerMapeamento(req.body?.mapeamento)));
-  } catch (e) {
-    responderErroDeImportacao(res, e);
-  }
+  res.json({ ok: await importe.limpar(tipo) });
+}));
+
+/** Exporta a consolidação em CSV. */
+app.get('/api/importe/export.csv', rota(async (_req, res) => {
+  const dados = await importe.consolidar();
+  const escapar = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const linhas = [
+    ['Grupo', 'Empenho (a pagar)', 'Folha (pago)', 'Diferenca', 'Situacao'].join(';'),
+    ...dados.grupos.map((g) => [
+      g.grupo, formatarBRL(g.empenhoCentavos), formatarBRL(g.folhaCentavos),
+      formatarBRL(g.diferencaCentavos), g.situacao,
+    ].map(escapar).join(';')),
+    ['TOTAL', formatarBRL(dados.totais.empenhoCentavos), formatarBRL(dados.totais.folhaCentavos),
+     formatarBRL(dados.totais.diferencaCentavos), ''].map(escapar).join(';'),
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="consolidado.csv"');
+  res.send('﻿' + linhas.join('\r\n'));
 }));
 
 /* ------------------------------------------------------------------ *
